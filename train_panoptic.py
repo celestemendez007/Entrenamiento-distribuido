@@ -86,6 +86,35 @@ def main(args):
     trainer.resume_or_load(resume=args.resume)
     return trainer.train()
 
+def _enable_windows_gloo_ipv4():
+    """
+    Corrige el bug de PyTorch Gloo en Windows donde dist.init_process_group ignora pg_options
+    y por defecto intenta enlazar por IPv6 link-local (fe80:...), bloqueando la comunicación LAN.
+    """
+    import socket
+    import torch.distributed.distributed_c10d as c10d
+
+    _orig_PGGloo = c10d.ProcessGroupGloo
+
+    class MetaGloo(type):
+        def __instancecheck__(cls, instance):
+            return isinstance(instance, _orig_PGGloo)
+
+    class PatchedGlooFactory(metaclass=MetaGloo):
+        def __new__(cls, store, rank, size, options=None, timeout=None):
+            if options is None:
+                options = _orig_PGGloo._Options()
+                if timeout is not None:
+                    options._timeout = timeout
+                try:
+                    local_ip = socket.gethostbyname(socket.gethostname())
+                    options._devices = [_orig_PGGloo.create_device(hostname=local_ip)]
+                except Exception:
+                    pass
+            return _orig_PGGloo(store, rank, size, options)
+
+    c10d.ProcessGroupGloo = PatchedGlooFactory
+
 def _distributed_worker(
     local_rank,
     main_func,
@@ -103,17 +132,8 @@ def _distributed_worker(
     backend = "nccl" if dist.is_nccl_available() else "gloo"
     os.environ["USE_LIBUV"] = "0"
     
-    pg_options = None
     if backend == "gloo":
-        import socket
-        try:
-            # Detectar la IP IPv4 local para evitar que Gloo enlace por IPv6 en Windows
-            local_ip = socket.gethostbyname(socket.gethostname())
-            opts = dist.ProcessGroupGloo._Options()
-            opts._devices = [dist.ProcessGroupGloo.create_device(hostname=local_ip)]
-            pg_options = opts
-        except Exception:
-            pass
+        _enable_windows_gloo_ipv4()
 
     try:
         print(f"[Rank {global_rank}] Conectando al grupo distribuido ({backend.upper()})...")
@@ -123,7 +143,6 @@ def _distributed_worker(
             world_size=world_size,
             rank=global_rank,
             timeout=timeout,
-            pg_options=pg_options,
         )
         print(f"[Rank {global_rank}] Conectado exitosamente. Sincronizando nodos...")
     except Exception as e:
@@ -141,7 +160,7 @@ def _distributed_worker(
     num_machines = world_size // num_gpus_per_machine
     for i in range(num_machines):
         ranks_on_i = list(range(i * num_gpus_per_machine, (i + 1) * num_gpus_per_machine))
-        pg = dist.new_group(ranks_on_i, pg_options=pg_options)
+        pg = dist.new_group(ranks_on_i)
         if i == machine_rank:
             comm._LOCAL_PROCESS_GROUP = pg
 
