@@ -9,11 +9,130 @@ import torch.multiprocessing as mp
 # Windows PyTorch support: Desactivar libuv para TCPStore (evita RuntimeError por falta de libuv en PyTorch para Windows)
 os.environ["USE_LIBUV"] = "0"
 
+import copy
+import numpy as np
+from PIL import Image
+
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup
 from detectron2.evaluation import COCOPanopticEvaluator
 from detectron2.utils import comm
+from detectron2.data import detection_utils as utils
+from detectron2.data import transforms as T
+from detectron2.data import build_detection_train_loader
+from detectron2.structures import Instances, Boxes, BitMasks
+
+class CustomPanopticDatasetMapper:
+    """
+    Extrae simultáneamente 'instances' (foreground objects) y 'sem_seg' (background stuff)
+    a partir de las máscaras panópticas COCO PNG sin requerir archivos adicionales de sem_seg.
+    """
+    def __init__(self, cfg, is_train=True):
+        self.is_train = is_train
+        if is_train:
+            self.augmentations = [
+                T.ResizeShortestEdge(
+                    cfg.INPUT.MIN_SIZE_TRAIN,
+                    cfg.INPUT.MAX_SIZE_TRAIN,
+                    cfg.INPUT.MIN_SIZE_TRAIN_SAMPLING,
+                ),
+                T.RandomFlip(),
+            ]
+        else:
+            self.augmentations = [
+                T.ResizeShortestEdge(
+                    cfg.INPUT.MIN_SIZE_TEST,
+                    cfg.INPUT.MAX_SIZE_TEST,
+                    "choice",
+                )
+            ]
+        self.img_format = cfg.INPUT.FORMAT
+
+    def __call__(self, dataset_dict):
+        dataset_dict = copy.deepcopy(dataset_dict)
+        image = utils.read_image(dataset_dict["file_name"], format=self.img_format)
+        utils.check_image_size(dataset_dict, image)
+
+        # 1. Decodificar la máscara panóptica PNG (R + G*256 + B*256^2)
+        pan_img = np.array(Image.open(dataset_dict["pan_seg_file_name"]), dtype=np.uint32)
+        pan_id = pan_img[:, :, 0] + (pan_img[:, :, 1] << 8) + (pan_img[:, :, 2] << 16)
+
+        H, W = pan_id.shape
+        sem_seg = np.zeros((H, W), dtype=np.uint8)
+
+        boxes = []
+        classes = []
+        masks = []
+
+        for seg in dataset_dict.get("segments_info", []):
+            seg_id = seg["id"]
+            cat_id = seg["category_id"]
+            is_thing = seg.get("isthing", False)
+            mask = (pan_id == seg_id)
+            if not mask.any():
+                continue
+            if is_thing:
+                y_idx, x_idx = np.where(mask)
+                box = [float(x_idx.min()), float(y_idx.min()), float(x_idx.max() + 1), float(y_idx.max() + 1)]
+                boxes.append(box)
+                classes.append(cat_id)
+                masks.append(mask.astype(np.uint8))
+            else:
+                # Mapear categorías de stuff al rango [1, 53] de SemSegFPNHead
+                stuff_id = cat_id - 80 + 1
+                sem_seg[mask] = stuff_id
+
+        # 2. Aplicar aumentos de imagen y máscara semántica
+        aug_input = T.AugInput(image, sem_seg=sem_seg)
+        transforms = T.AugmentationList(self.augmentations)(aug_input)
+        image = aug_input.image
+        sem_seg = aug_input.sem_seg
+
+        dataset_dict["image"] = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1).astype("float32")))
+        dataset_dict["sem_seg"] = torch.as_tensor(sem_seg.astype("int64"), dtype=torch.int64)
+
+        # 3. Aplicar transformaciones a las máscaras y cajas de instancias
+        inst = Instances(image.shape[:2])
+        if len(masks) > 0:
+            transformed_masks = []
+            transformed_boxes = []
+            transformed_classes = []
+            for m, b, c in zip(masks, boxes, classes):
+                m_tfm = transforms.apply_segmentation(m) > 0
+                if m_tfm.any():
+                    transformed_masks.append(m_tfm)
+                    transformed_classes.append(c)
+                    y_i, x_i = np.where(m_tfm)
+                    transformed_boxes.append([float(x_i.min()), float(y_i.min()), float(x_i.max() + 1), float(y_i.max() + 1)])
+
+            if len(transformed_masks) > 0:
+                inst.gt_boxes = Boxes(torch.as_tensor(transformed_boxes, dtype=torch.float32))
+                inst.gt_classes = torch.as_tensor(transformed_classes, dtype=torch.int64)
+                inst.gt_masks = BitMasks(torch.as_tensor(np.stack(transformed_masks), dtype=torch.bool))
+            else:
+                inst.gt_boxes = Boxes(torch.zeros((0, 4), dtype=torch.float32))
+                inst.gt_classes = torch.zeros((0,), dtype=torch.int64)
+                inst.gt_masks = BitMasks(torch.zeros((0, image.shape[0], image.shape[1]), dtype=torch.bool))
+        else:
+            inst.gt_boxes = Boxes(torch.zeros((0, 4), dtype=torch.float32))
+            inst.gt_classes = torch.zeros((0,), dtype=torch.int64)
+            inst.gt_masks = BitMasks(torch.zeros((0, image.shape[0], image.shape[1]), dtype=torch.bool))
+
+        dataset_dict["instances"] = inst
+        return dataset_dict
+
+class CustomCOCOPanopticEvaluator(COCOPanopticEvaluator):
+    """
+    Evaluador panóptico compatible con PanopticFPN (mapea las 53 clases de stuff al rango COCO estándar).
+    """
+    def __init__(self, dataset_name, output_dir=None):
+        super().__init__(dataset_name, output_dir)
+        from detectron2.data.datasets.builtin_meta import _get_builtin_metadata
+        m_sep = _get_builtin_metadata("coco_panoptic_separated")
+        self._stuff_contiguous_id_to_dataset_id = {
+            v: k for k, v in m_sep["stuff_dataset_id_to_contiguous_id"].items()
+        }
 
 class PanopticTrainer(DefaultTrainer):
     @classmethod
@@ -23,7 +142,12 @@ class PanopticTrainer(DefaultTrainer):
         """
         if output_folder is None:
             output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-        return COCOPanopticEvaluator(dataset_name, output_folder)
+        return CustomCOCOPanopticEvaluator(dataset_name, output_folder)
+
+    @classmethod
+    def build_train_loader(cls, cfg):
+        mapper = CustomPanopticDatasetMapper(cfg, is_train=True)
+        return build_detection_train_loader(cfg, mapper=mapper)
 
 def setup(args):
     """
