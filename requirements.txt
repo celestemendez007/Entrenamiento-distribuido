@@ -12,6 +12,7 @@
 
 # PASO 1: Instalar utilidades de compilación primero
 setuptools==69.5.1
+pillow<10.0
 ninja
 cython
 pycocotools
