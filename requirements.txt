@@ -1,0 +1,24 @@
+# ==============================================================================
+# REQUISITOS DEL ENTORNO (WINDOWS NATIVO) - VERIFICADO Y PROBADO
+# ==============================================================================
+# - Python: 3.11 / 3.10
+# - GPU: NVIDIA GeForce RTX (CUDA 12.1)
+# ==============================================================================
+
+# PASO 1: Utilidades base y de compilación
+wheel
+setuptools==69.5.1
+ninja
+cython
+pycocotools
+opencv-python
+matplotlib
+pillow<10
+panopticapi @ git+https://github.com/cocodataset/panopticapi.git
+
+# PASO 2: PyTorch con aceleración CUDA 12.1
+# pip uninstall torch torchvision torchaudio -y
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# PASO 3: Detectron2 para Windows
+# pip install git+https://github.com/ivanpp/detectron2.git --no-build-isolation
