@@ -103,20 +103,36 @@ def _distributed_worker(
     backend = "nccl" if dist.is_nccl_available() else "gloo"
     os.environ["USE_LIBUV"] = "0"
     
+    pg_options = None
+    if backend == "gloo":
+        import socket
+        try:
+            # Detectar la IP IPv4 local para evitar que Gloo enlace por IPv6 en Windows
+            local_ip = socket.gethostbyname(socket.gethostname())
+            opts = dist.ProcessGroupGloo._Options()
+            opts._devices = [dist.ProcessGroupGloo.create_device(hostname=local_ip)]
+            pg_options = opts
+        except Exception:
+            pass
+
     try:
+        print(f"[Rank {global_rank}] Conectando al grupo distribuido ({backend.upper()})...")
         dist.init_process_group(
             backend=backend,
             init_method=dist_url,
             world_size=world_size,
             rank=global_rank,
             timeout=timeout,
+            pg_options=pg_options,
         )
+        print(f"[Rank {global_rank}] Conectado exitosamente. Sincronizando nodos...")
     except Exception as e:
         logger = logging.getLogger("detectron2")
         logger.error(f"Error inicializando grupo de procesos con URL: {dist_url}")
         raise e
 
     comm.synchronize()
+    print(f"[Rank {global_rank}] Sincronización completada. Iniciando modelo...")
 
     assert num_gpus_per_machine <= torch.cuda.device_count()
     torch.cuda.set_device(local_rank)
@@ -125,7 +141,7 @@ def _distributed_worker(
     num_machines = world_size // num_gpus_per_machine
     for i in range(num_machines):
         ranks_on_i = list(range(i * num_gpus_per_machine, (i + 1) * num_gpus_per_machine))
-        pg = dist.new_group(ranks_on_i)
+        pg = dist.new_group(ranks_on_i, pg_options=pg_options)
         if i == machine_rank:
             comm._LOCAL_PROCESS_GROUP = pg
 
