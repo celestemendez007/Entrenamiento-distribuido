@@ -169,26 +169,30 @@ def setup(args):
     # 7. Transfer Learning: Pesos iniciales del Model Zoo
     cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-PanopticSegmentation/panoptic_fpn_R_50_3x.yaml")
     
-    # 6. Reducción extrema de resolución para 4GB VRAM
+    # 6. Reducción de resolución y optimizaciones de hardware
     cfg.INPUT.MIN_SIZE_TRAIN = (512,)
-    cfg.INPUT.MAX_SIZE_TRAIN = 800 # Limitar también el lado máximo
-    
-    # 6. Ajuste conservador de NUM_WORKERS
+    cfg.INPUT.MAX_SIZE_TRAIN = 800
     cfg.DATALOADER.NUM_WORKERS = 2 
-    
+
+    # Activar optimizaciones Ampere (Tensor Cores y cuDNN Benchmark)
+    torch.set_float32_matmul_precision("high")
+    cfg.CUDNN_BENCHMARK = True
+
     # 7. Precisión Mixta (AMP - FP16)
     cfg.SOLVER.AMP.ENABLED = True
     
-    # 7. Tamaño de lote: 2 total (1 imagen por cada una de las 2 GPUs/PCs)
-    # Detectron2 exige que IMS_PER_BATCH sea divisible por el total de GPUs (2 / 2 = 1 por GPU)
-    cfg.SOLVER.IMS_PER_BATCH = 2 
+    # 7. Tamaño de lote: 4 total (2 imágenes por cada una de las 2 GPUs/PCs)
+    # Detectron2 exige que IMS_PER_BATCH sea divisible por el total de GPUs (4 / 2 = 2 por GPU)
+    cfg.SOLVER.IMS_PER_BATCH = 4 
     
     # 7. Backbone ligero y congelado (Congelar los primeros 3 bloques ahorra VRAM)
     cfg.MODEL.BACKBONE.FREEZE_AT = 3
     
-    # 8. Hyperparameter Tuning: Tasa de aprendizaje ajustada para batch size 2
-    cfg.SOLVER.BASE_LR = 0.0002 
-    cfg.SOLVER.MAX_ITER = 90000 
+    # 8. Hyperparameter Tuning optimizado: 20,000 iteraciones y LR escalado
+    cfg.SOLVER.BASE_LR = 0.0004 
+    cfg.SOLVER.MAX_ITER = 20000 
+    cfg.SOLVER.STEPS = (14000, 18000)
+    cfg.SOLVER.CHECKPOINT_PERIOD = 2500
     
     cfg.merge_from_list(args.opts)
     cfg.freeze()
