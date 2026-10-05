@@ -1,78 +1,81 @@
 import json
 import os
+import shutil
 
-# Directorios de referencia (ajustar si se filtra por fotos o por máscaras)
-img_dir = os.path.join("datasets", "coco", "train2017")
-panoptic_dir = os.path.join("datasets", "coco", "panoptic_train2017")
-json_path = os.path.join("datasets", "coco", "annotations", "panoptic_train2017.json")
+splits = ["train", "val"]
 
-if not os.path.exists(json_path):
-    print(f"ERROR: No se encontró el archivo JSON en: {json_path}")
-    exit(1)
+for split in splits:
+    print("=" * 60)
+    print(f"PROCESANDO SPLIT: {split.upper()}2017")
+    print("=" * 60)
+    
+    img_dir = os.path.join("datasets", "coco", f"{split}2017")
+    mask_dir = os.path.join("datasets", "coco", f"panoptic_{split}2017")
+    json_path = os.path.join("datasets", "coco", "annotations", f"panoptic_{split}2017.json")
+    
+    if not os.path.exists(json_path):
+        print(f"AVISO: No se encontró el JSON: {json_path}")
+        continue
 
-# Determinar cuál carpeta existe y tiene archivos físicos para sincronizar
-target_dir = None
-is_panoptic_mask = False
+    if not os.path.exists(img_dir) or len(os.listdir(img_dir)) == 0:
+        print(f"ERROR: La carpeta de imágenes '{img_dir}' está vacía o no existe.")
+        continue
 
-if os.path.exists(img_dir) and len(os.listdir(img_dir)) > 0:
-    target_dir = img_dir
-    is_panoptic_mask = False
-elif os.path.exists(panoptic_dir) and len(os.listdir(panoptic_dir)) > 0:
-    target_dir = panoptic_dir
-    is_panoptic_mask = True
-else:
-    print("ALERTA DE SEGURIDAD: Ni 'train2017' ni 'panoptic_train2017' contienen archivos.")
-    print("La sincronización se CANCELA para evitar vaciar y corromper el archivo JSON.")
-    exit(0)
+    if not os.path.exists(mask_dir) or len(os.listdir(mask_dir)) == 0:
+        print(f"ERROR: La carpeta de máscaras '{mask_dir}' está vacía o no existe.")
+        continue
 
-print(f"Leyendo archivos físicos desde: {target_dir}")
-archivos_fisicos = set(os.listdir(target_dir))
-print(f"Archivos encontrados en la carpeta: {len(archivos_fisicos)}")
+    jpg_files = set(os.listdir(img_dir))
+    png_bases = set(os.path.splitext(f)[0] for f in os.listdir(mask_dir) if f.endswith(".png"))
+    
+    print(f"Imágenes JPG en '{img_dir}': {len(jpg_files)}")
+    print(f"Máscaras PNG en '{mask_dir}': {len(png_bases)}")
 
-print("Cargando JSON original (esto puede tomar unos segundos)...")
-with open(json_path, 'r') as f:
-    data = json.load(f)
+    print("Cargando JSON (esto puede tomar unos segundos)...")
+    with open(json_path, "r") as f:
+        data = json.load(f)
 
-print(f"Imágenes originales en JSON: {len(data.get('images', []))}")
+    original_images_count = len(data.get("images", []))
+    print(f"Imágenes originales en JSON: {original_images_count}")
 
-# Filtrar solo las imágenes que aún existen en la carpeta
-imagenes_filtradas = []
-ids_validos = set()
+    # Filtrar imágenes que tienen TANTO el .jpg como la máscara .png
+    imagenes_filtradas = []
+    ids_validos = set()
 
-for img in data.get('images', []):
-    fname = img['file_name']
-    # Si estamos comparando contra máscaras panópticas, reemplazar extensión a .png
-    if is_panoptic_mask:
-        fname_compare = os.path.splitext(fname)[0] + ".png"
-    else:
-        fname_compare = fname
+    for img in data.get("images", []):
+        fname = img["file_name"]
+        base_name = os.path.splitext(fname)[0]
+        if fname in jpg_files and base_name in png_bases:
+            imagenes_filtradas.append(img)
+            ids_validos.add(img["id"])
 
-    if fname_compare in archivos_fisicos:
-        imagenes_filtradas.append(img)
-        ids_validos.add(img['id'])
+    print(f"Imágenes completas (JPG + PNG) coincidentes: {len(imagenes_filtradas)}")
 
-if len(imagenes_filtradas) == 0:
-    print("ERROR CRÍTICO: 0 imágenes coincidieron. Se ABORTA el guardado para proteger el archivo JSON.")
-    exit(1)
+    if len(imagenes_filtradas) == 0:
+        print("ERROR CRÍTICO: 0 imágenes coincidieron. Se aborta para no corromper el JSON.")
+        continue
 
-print(f"Imágenes válidas que se guardarán en el nuevo JSON: {len(imagenes_filtradas)}")
-data['images'] = imagenes_filtradas
+    data["images"] = imagenes_filtradas
 
-# Filtrar las anotaciones que corresponden a esas imágenes válidas
-print(f"Anotaciones originales en JSON: {len(data.get('annotations', []))}")
-anotaciones_filtradas = [ann for ann in data.get('annotations', []) if ann['image_id'] in ids_validos]
-print(f"Anotaciones válidas que se guardarán: {len(anotaciones_filtradas)}")
-data['annotations'] = anotaciones_filtradas
+    # Filtrar anotaciones correspondientes
+    original_ann_count = len(data.get("annotations", []))
+    anotaciones_filtradas = [ann for ann in data.get("annotations", []) if ann["image_id"] in ids_validos]
+    print(f"Anotaciones originales: {original_ann_count} -> Filtradas: {len(anotaciones_filtradas)}")
+    data["annotations"] = anotaciones_filtradas
 
-# Crear backup de seguridad antes de sobreescribir
-backup_path = json_path + ".bak"
-if not os.path.exists(backup_path):
-    import shutil
-    shutil.copyfile(json_path, backup_path)
-    print(f"Copia de seguridad guardada en: {backup_path}")
+    # Backup de seguridad
+    backup_path = json_path + ".bak"
+    if not os.path.exists(backup_path):
+        shutil.copyfile(json_path, backup_path)
+        print(f"Backup creado en: {backup_path}")
 
-print("Guardando JSON actualizado...")
-with open(json_path, 'w') as f:
-    json.dump(data, f)
+    # Guardar JSON actualizado
+    print(f"Guardando nuevo JSON en: {json_path} ...")
+    with open(json_path, "w") as f:
+        json.dump(data, f)
 
-print("¡Sincronización completada exitosamente! Tu dataset está listo.")
+    print(f"¡{split.upper()} sincronizado exitosamente!\n")
+
+print("=" * 60)
+print("¡TODOS LOS SPLITS SINCRONIZADOS Y LISTOS PARA ENTRENAMIENTO!")
+print("=" * 60)
