@@ -181,18 +181,20 @@ def setup(args):
     # 7. Precisión Mixta (AMP - FP16)
     cfg.SOLVER.AMP.ENABLED = True
     
-    # 7. Tamaño de lote: 4 total (2 imágenes por cada una de las 2 GPUs/PCs)
-    # Detectron2 exige que IMS_PER_BATCH sea divisible por el total de GPUs (4 / 2 = 2 por GPU)
-    cfg.SOLVER.IMS_PER_BATCH = 4 
+    # 7. Tamaño de lote: 12 total (6 imágenes por cada una de las 2 GPUs/PCs)
+    # Detectron2 exige que IMS_PER_BATCH sea divisible por el total de GPUs (12 / 2 = 6 por GPU)
+    # Esto consumirá aproximadamente ~7.5 - 8.5 GB de VRAM en cada RTX 3060
+    cfg.SOLVER.IMS_PER_BATCH = 12 
     
-    # 7. Backbone ligero y congelado (Congelar los primeros 3 bloques ahorra VRAM)
-    cfg.MODEL.BACKBONE.FREEZE_AT = 3
+    # 7. Backbone (congelar los primeros 2 bloques para mejor precisión con el lote ampliado)
+    cfg.MODEL.BACKBONE.FREEZE_AT = 2
     
-    # 8. Hyperparameter Tuning optimizado: 20,000 iteraciones y LR escalado
-    cfg.SOLVER.BASE_LR = 0.0004 
-    cfg.SOLVER.MAX_ITER = 20000 
-    cfg.SOLVER.STEPS = (14000, 18000)
-    cfg.SOLVER.CHECKPOINT_PERIOD = 2500
+    # 8. Hyperparameter Tuning optimizado para ~8 GB VRAM (~4.5 - 5 horas de entrenamiento)
+    cfg.SOLVER.BASE_LR = 0.001 
+    cfg.SOLVER.WARMUP_ITERS = 500
+    cfg.SOLVER.MAX_ITER = 7000 
+    cfg.SOLVER.STEPS = (4800, 6200)
+    cfg.SOLVER.CHECKPOINT_PERIOD = 1000
     
     cfg.merge_from_list(args.opts)
     cfg.freeze()
