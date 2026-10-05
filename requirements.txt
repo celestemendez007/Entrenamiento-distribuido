@@ -1,0 +1,29 @@
+# ==============================================================================
+# REQUISITOS DEL ENTORNO (WINDOWS NATIVO)
+# ==============================================================================
+# - Versión de Python recomendada: 3.10 (3.11 también puede funcionar, pero 3.10 es más estable para compilar)
+# - Requisito previo: Microsoft Visual C++ Build Tools (Desktop development with C++) instalado.
+# - GPU: NVIDIA con CUDA Toolkit compatible (ej. CUDA 12.1 o 11.8)
+# ==============================================================================
+# IMPORTANTE: No puedes instalar PyTorch y Detectron2 con un solo "pip install -r requirements.txt"
+# debido a cómo Pip maneja la caché en Windows y el entorno de compilación.
+# Sigue estos pasos exactos:
+# ==============================================================================
+
+# PASO 1: Instalar utilidades de compilación primero
+setuptools==69.5.1
+ninja
+cython
+pycocotools
+opencv-python
+matplotlib
+panopticapi @ git+https://github.com/cocodataset/panopticapi.git
+
+# PASO 2: Instalar PyTorch forzando la versión CUDA (Ignorando PyPI por defecto)
+# Ejecuta en tu terminal:
+# pip uninstall torch torchvision torchaudio -y
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# PASO 3: Instalar Detectron2 para Windows sin aislamiento de entorno
+# Ejecuta en tu terminal:
+# pip install git+https://github.com/ivanpp/detectron2.git --no-build-isolation
