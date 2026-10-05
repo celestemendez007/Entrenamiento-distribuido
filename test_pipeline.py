@@ -59,7 +59,7 @@ def test_code_configuration():
         print(f"[ERROR] Error al cargar config base: {e}")
         return False
 
-    # Pipeline adjustments para 3 GPUs (1 por máquina)
+    # Pipeline adjustments para 2 GPUs (1 por máquina)
     cfg.DATASETS.TRAIN = ("coco_2017_train_panoptic",)
     cfg.DATASETS.TEST = ("coco_2017_val_panoptic",)
     cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-PanopticSegmentation/panoptic_fpn_R_50_3x.yaml")
@@ -67,9 +67,9 @@ def test_code_configuration():
     cfg.INPUT.MAX_SIZE_TRAIN = 800
     cfg.DATALOADER.NUM_WORKERS = 2
     cfg.SOLVER.AMP.ENABLED = True
-    cfg.SOLVER.IMS_PER_BATCH = 3
+    cfg.SOLVER.IMS_PER_BATCH = 2
     cfg.MODEL.BACKBONE.FREEZE_AT = 3
-    cfg.SOLVER.BASE_LR = 0.0003
+    cfg.SOLVER.BASE_LR = 0.0002
     cfg.SOLVER.MAX_ITER = 90000
 
     # Assertions
@@ -78,9 +78,9 @@ def test_code_configuration():
         ("Paso 6: Resolución reducida 512px", cfg.INPUT.MIN_SIZE_TRAIN == (512,)),
         ("Paso 6: NUM_WORKERS = 2", cfg.DATALOADER.NUM_WORKERS == 2),
         ("Paso 7: AMP (FP16) Activado", cfg.SOLVER.AMP.ENABLED == True),
-        ("Paso 7: Batch Size global = 3 (1 por cada una de las 3 GPUs)", cfg.SOLVER.IMS_PER_BATCH == 3),
+        ("Paso 7: Batch Size global = 2 (1 por cada una de las 2 GPUs)", cfg.SOLVER.IMS_PER_BATCH == 2),
         ("Paso 7: Congelamiento FREEZE_AT = 3", cfg.MODEL.BACKBONE.FREEZE_AT == 3),
-        ("Paso 8: BASE_LR = 0.0003 (escalado lineal batch 3)", cfg.SOLVER.BASE_LR == 0.0003),
+        ("Paso 8: BASE_LR = 0.0002 (escalado lineal batch 2)", cfg.SOLVER.BASE_LR == 0.0002),
         ("Paso 8: MAX_ITER = 90000", cfg.SOLVER.MAX_ITER == 90000),
     ]
 

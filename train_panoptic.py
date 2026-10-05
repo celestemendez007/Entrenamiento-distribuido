@@ -44,15 +44,15 @@ def setup(args):
     # 7. Precisión Mixta (AMP - FP16)
     cfg.SOLVER.AMP.ENABLED = True
     
-    # 7. Tamaño de lote: 3 total (1 imagen por cada una de las 3 GPUs/PCs)
-    # Detectron2 exige que IMS_PER_BATCH sea divisible por el total de GPUs (3 / 3 = 1 por GPU)
-    cfg.SOLVER.IMS_PER_BATCH = 3 
+    # 7. Tamaño de lote: 2 total (1 imagen por cada una de las 2 GPUs/PCs)
+    # Detectron2 exige que IMS_PER_BATCH sea divisible por el total de GPUs (2 / 2 = 1 por GPU)
+    cfg.SOLVER.IMS_PER_BATCH = 2 
     
     # 7. Backbone ligero y congelado (Congelar los primeros 3 bloques ahorra VRAM)
     cfg.MODEL.BACKBONE.FREEZE_AT = 3
     
-    # 8. Hyperparameter Tuning: Tasa de aprendizaje ajustada para batch size 3
-    cfg.SOLVER.BASE_LR = 0.0003 
+    # 8. Hyperparameter Tuning: Tasa de aprendizaje ajustada para batch size 2
+    cfg.SOLVER.BASE_LR = 0.0002 
     cfg.SOLVER.MAX_ITER = 90000 
     
     cfg.merge_from_list(args.opts)
