@@ -1,8 +1,19 @@
 import os
+import sys
+import logging
+from datetime import timedelta
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+
+# Windows PyTorch support: Desactivar libuv para TCPStore (evita RuntimeError por falta de libuv en PyTorch para Windows)
+os.environ["USE_LIBUV"] = "0"
+
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
-from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch
+from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup
 from detectron2.evaluation import COCOPanopticEvaluator
+from detectron2.utils import comm
 
 class PanopticTrainer(DefaultTrainer):
     @classmethod
@@ -75,12 +86,90 @@ def main(args):
     trainer.resume_or_load(resume=args.resume)
     return trainer.train()
 
+def _distributed_worker(
+    local_rank,
+    main_func,
+    world_size,
+    num_gpus_per_machine,
+    machine_rank,
+    dist_url,
+    args,
+    timeout=timedelta(minutes=30),
+):
+    assert torch.cuda.is_available(), "CUDA no está disponible en este sistema."
+    global_rank = machine_rank * num_gpus_per_machine + local_rank
+    
+    # En Windows, PyTorch oficial solo soporta GLOO (NCCL es exclusivo de Linux)
+    backend = "nccl" if dist.is_nccl_available() else "gloo"
+    os.environ["USE_LIBUV"] = "0"
+    
+    try:
+        dist.init_process_group(
+            backend=backend,
+            init_method=dist_url,
+            world_size=world_size,
+            rank=global_rank,
+            timeout=timeout,
+        )
+    except Exception as e:
+        logger = logging.getLogger("detectron2")
+        logger.error(f"Error inicializando grupo de procesos con URL: {dist_url}")
+        raise e
+
+    comm.synchronize()
+
+    assert num_gpus_per_machine <= torch.cuda.device_count()
+    torch.cuda.set_device(local_rank)
+
+    assert comm._LOCAL_PROCESS_GROUP is None
+    num_machines = world_size // num_gpus_per_machine
+    for i in range(num_machines):
+        ranks_on_i = list(range(i * num_gpus_per_machine, (i + 1) * num_gpus_per_machine))
+        pg = dist.new_group(ranks_on_i)
+        if i == machine_rank:
+            comm._LOCAL_PROCESS_GROUP = pg
+
+    main_func(*args)
+
+def custom_launch(
+    main_func,
+    num_gpus_per_machine,
+    num_machines=1,
+    machine_rank=0,
+    dist_url=None,
+    args=(),
+    timeout=timedelta(minutes=30),
+):
+    os.environ["USE_LIBUV"] = "0"
+    world_size = num_machines * num_gpus_per_machine
+    if world_size > 1:
+        if dist_url and dist_url.startswith("tcp://") and "use_libuv" not in dist_url:
+            separator = "&" if "?" in dist_url else "?"
+            dist_url = f"{dist_url}{separator}use_libuv=0"
+
+        mp.spawn(
+            _distributed_worker,
+            nprocs=num_gpus_per_machine,
+            args=(
+                main_func,
+                world_size,
+                num_gpus_per_machine,
+                machine_rank,
+                dist_url,
+                args,
+                timeout,
+            ),
+            daemon=False,
+        )
+    else:
+        main_func(*args)
+
 if __name__ == "__main__":
     parser = default_argument_parser()
     args = parser.parse_args()
     print("Argumentos de linea de comandos:", args)
     
-    launch(
+    custom_launch(
         main,
         args.num_gpus,
         num_machines=args.num_machines,
@@ -88,3 +177,4 @@ if __name__ == "__main__":
         dist_url=args.dist_url,
         args=(args,),
     )
+
